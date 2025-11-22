@@ -37,12 +37,15 @@ The Phase 1 implementation consists of three main modules:
    pip install -r requirements.txt
    ```
 
-3. **Set up J-Quants API key** (if using API):
+3. **Set up J-Quants authentication credentials** (if using API):
    - Create a `.env` file in the project root
-   - Add your API key:
+   - Add your login info and refresh token (copied from the J-Quants UI):
      ```
-     JQUANTS_API_KEY=your_api_key_here
+     JQUANTS_EMAIL=your_email@example.com
+     JQUANTS_PASSWORD=your_password
+     JQUANTS_REFRESH_TOKEN=refresh_token_from_ui
      ```
+   - The app will automatically exchange the refresh token for an idToken before calling the API.
    - If you have a sample CSV file, you can skip this step
 
 ## Usage
@@ -170,8 +173,8 @@ The final DataFrame contains:
 ## Troubleshooting
 
 ### J-Quants API Issues
-- Ensure your API key is set in the `.env` file
-- Check that the API key has proper permissions
+- Ensure your email, password, and refresh token are set in the `.env` file
+- Confirm that the refresh token copied from the UI is still valid (issue a new one if necessary)
 - Verify the stock code format (4-digit code for Japanese stocks)
 
 ### CSV Loading Issues

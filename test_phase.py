@@ -32,27 +32,27 @@ def test_pipeline(code: str, start_date: str, end_date: str, csv_path: str = Non
     print("\n[Step 1] Loading stock data...")
     try:
         df = load_stock_data(code, start_date, end_date, csv_path)
-        print(f"✓ Loaded {len(df)} records")
+        print(f"[OK] Loaded {len(df)} records")
         print(f"  Date range: {df['date'].min()} to {df['date'].max()}")
         print(f"  Columns: {list(df.columns)}")
         print(f"\n  First few rows:")
         print(df.head())
     except Exception as e:
-        print(f"✗ Error loading data: {e}")
+        print(f"[ERROR] Error loading data: {e}")
         return
     
     # Step 2: Preprocess
     print("\n[Step 2] Preprocessing data...")
     try:
         df_processed = preprocess_data(df)
-        print(f"✓ Preprocessed {len(df_processed)} records")
+        print(f"[OK] Preprocessed {len(df_processed)} records")
         
         # Validate
         is_valid, issues = validate_data(df_processed)
         if is_valid:
-            print("✓ Data validation passed")
+            print("[OK] Data validation passed")
         else:
-            print("⚠ Data validation found issues:")
+            print("[WARNING] Data validation found issues:")
             for issue in issues:
                 print(f"  - {issue}")
         
@@ -60,14 +60,14 @@ def test_pipeline(code: str, start_date: str, end_date: str, csv_path: str = Non
         print(df_processed.isna().sum())
         
     except Exception as e:
-        print(f"✗ Error preprocessing data: {e}")
+        print(f"[ERROR] Error preprocessing data: {e}")
         return
     
     # Step 3: Generate labels
     print("\n[Step 3] Generating labels...")
     try:
         df_labeled = generate_labels(df_processed)
-        print(f"✓ Generated labels for {len(df_labeled)} records")
+        print(f"[OK] Generated labels for {len(df_labeled)} records")
         
         # Label statistics
         strong_buy_count = df_labeled['buystrong_label'].sum()
@@ -85,7 +85,7 @@ def test_pipeline(code: str, start_date: str, end_date: str, csv_path: str = Non
         available_cols = [col for col in result_cols if col in df_labeled.columns]
         if len(available_cols) < len(result_cols):
             missing = [col for col in result_cols if col not in df_labeled.columns]
-            print(f"  ⚠ Warning: Missing columns: {missing}")
+            print(f"  [WARNING] Missing columns: {missing}")
         
         # Show sample records with all columns
         print(f"\n  Sample records with labels (first 20):")
@@ -103,13 +103,13 @@ def test_pipeline(code: str, start_date: str, end_date: str, csv_path: str = Non
             print(buy_samples[available_cols].to_string(index=False))
         
     except Exception as e:
-        print(f"✗ Error generating labels: {e}")
+        print(f"[ERROR] Error generating labels: {e}")
         import traceback
         traceback.print_exc()
         return
     
     print("\n" + "=" * 60)
-    print("✓ Pipeline test completed successfully!")
+    print("[OK] Pipeline test completed successfully!")
     print("=" * 60)
     
     # Return DataFrame with only requested columns in correct order
@@ -136,13 +136,17 @@ if __name__ == "__main__":
     print(f"  Stock Code: {code}")
     print(f"  Start Date: {start_date}")
     print(f"  End Date: {end_date}")
-    print(f"  CSV Path: {csv_path if csv_path else 'Using J-Quants API'}")
+    if csv_path:
+        print(f"  CSV Path: {csv_path}")
+    else:
+        print("  Data Source: J-Quants API (RefreshToken -> idToken flow)")
+        print("  Ensure JQUANTS_EMAIL, JQUANTS_PASSWORD, and JQUANTS_REFRESH_TOKEN are set in .env")
     
     # Run test
     result = test_pipeline(code, start_date, end_date, csv_path)
     
     if result is not None:
-        print(f"\n✓ Test completed. Final DataFrame shape: {result.shape}")
+        print(f"\n[OK] Test completed. Final DataFrame shape: {result.shape}")
         
         # Display final result with all columns
         print(f"\nFinal Result (date, code, open, high, low, close, volume, buystrong_label, buy_label):")
@@ -151,4 +155,4 @@ if __name__ == "__main__":
         # Save to CSV
         output_file = f"result_{code}_{start_date}_{end_date}.csv"
         result.to_csv(output_file, index=False)
-        print(f"\n✓ Results saved to: {output_file}")
+        print(f"\n[OK] Results saved to: {output_file}")

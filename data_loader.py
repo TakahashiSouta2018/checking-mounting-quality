@@ -9,7 +9,7 @@ import os
 import pandas as pd
 import requests
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Dict, Any
 
 load_dotenv()
 
@@ -60,6 +60,166 @@ def load_data_from_csv(csv_path: str, code: Optional[str] = None) -> pd.DataFram
     return df
 
 
+class JQuantsAuthError(Exception):
+    """Custom exception for J-Quants authentication issues."""
+
+
+def _request_json(url: str, payload: Dict[str, Any], timeout: int = 30, use_json: bool = True) -> Dict[str, Any]:
+    """Helper to POST JSON payloads and return parsed responses."""
+    headers = {"Content-Type": "application/json"} if use_json else {}
+    if use_json:
+        response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    else:
+        # Try as form data
+        response = requests.post(url, data=payload, headers=headers, timeout=timeout)
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        # Try to get error details from response
+        error_details = ""
+        try:
+            error_body = response.json()
+            error_details = f" Response: {error_body}"
+        except:
+            error_details = f" Response text: {response.text[:200]}"
+        raise requests.exceptions.HTTPError(f"{exc}{error_details}") from exc
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise JQuantsAuthError(f"Invalid JSON response from {url}") from exc
+
+
+def _obtain_refresh_token(email: Optional[str], password: Optional[str]) -> str:
+    """
+    Request a new refresh token using email/password if one is not provided.
+    """
+    if not email or not password:
+        raise JQuantsAuthError(
+            "J-Quants refresh token missing. Provide JQUANTS_REFRESH_TOKEN or "
+            "both JQUANTS_EMAIL and JQUANTS_PASSWORD in your environment."
+        )
+
+    auth_user_url = "https://api.jquants.com/v1/token/auth_user"
+    # J-Quants API expects "mailaddress" not "email" based on API error messages
+    data = _request_json(auth_user_url, {"mailaddress": email, "password": password})
+    refresh_token = data.get("refreshToken") or data.get("refreshtoken")
+    if not refresh_token:
+        raise JQuantsAuthError("Unable to obtain refresh token from auth_user endpoint.")
+    return refresh_token
+
+
+def get_jquants_id_token() -> str:
+    """
+    Issue an idToken from RefreshToken to comply with the current J-Quants spec.
+
+    Returns:
+        idToken string to be used as Bearer token.
+    
+    Raises:
+        JQuantsAuthError: If refresh token is missing or invalid
+    """
+    email = os.getenv("JQUANTS_EMAIL") or os.getenv("JQUANTS_EMAILADDRESS")
+    password = os.getenv("JQUANTS_PASSWORD")
+    refresh_token = os.getenv("JQUANTS_REFRESH_TOKEN")
+
+    # Strategy: Try refresh token first, fall back to email/password if it fails
+    use_refresh_token = refresh_token and refresh_token.strip() != ""
+    
+    if use_refresh_token:
+        # Clean and validate refresh token
+        refresh_token = refresh_token.strip().strip('"').strip("'").strip()
+        refresh_token = refresh_token.replace('\n', '').replace('\r', '')
+        
+        if not refresh_token:
+            use_refresh_token = False
+        elif len(refresh_token) < 10:
+            use_refresh_token = False
+    
+    # If no valid refresh token, try to obtain one from email/password
+    if not use_refresh_token:
+        if not email or not password:
+            raise JQuantsAuthError(
+                "J-Quants authentication failed. Please provide either:\n"
+                "  - JQUANTS_REFRESH_TOKEN in .env file, OR\n"
+                "  - Both JQUANTS_EMAIL and JQUANTS_PASSWORD in .env file"
+            )
+        try:
+            refresh_token = _obtain_refresh_token(email, password)
+            use_refresh_token = True
+        except Exception as e:
+            raise JQuantsAuthError(
+                f"Failed to obtain refresh token from email/password: {e}\n"
+                "Please check your JQUANTS_EMAIL and JQUANTS_PASSWORD in .env file."
+            ) from e
+
+
+    auth_refresh_url = "https://api.jquants.com/v1/token/auth_refresh"
+    
+    # Validate refresh token
+    if not isinstance(refresh_token, str) or len(refresh_token) == 0:
+        raise JQuantsAuthError(
+            f"Invalid refresh token format. Token type: {type(refresh_token)}, "
+            f"Length: {len(refresh_token) if refresh_token else 0}"
+        )
+    
+    # J-Quants API accepts refresh token as query parameter
+    try:
+        response = requests.post(
+            f"{auth_refresh_url}?refreshtoken={refresh_token}",
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+        id_token = data.get("idToken") or data.get("idtoken")
+        if id_token:
+            return id_token
+        raise JQuantsAuthError(
+            f"Response received but no idToken found. Response keys: {list(data.keys())}"
+        )
+    except requests.exceptions.HTTPError as exc:
+        # Get error details for better debugging
+        error_details = ""
+        try:
+            error_body = exc.response.json()
+            error_details = f" Response: {error_body}"
+        except:
+            if hasattr(exc, 'response'):
+                error_details = f" Response text: {exc.response.text[:200]}"
+        raise JQuantsAuthError(f"Unable to issue idToken from refresh token: {exc}{error_details}") from exc
+    except requests.RequestException as exc:
+        raise JQuantsAuthError(f"Unable to issue idToken from refresh token: {exc}") from exc
+        # If refresh token from .env fails, try getting a fresh one from email/password
+        error_str = str(exc)
+        if "'refreshtoken' is required" in error_str or "400" in error_str:
+            # The stored refresh token might be invalid/expired, try email/password as fallback
+            if email and password:
+                try:
+                    # Get a fresh refresh token
+                    fresh_refresh_token = _obtain_refresh_token(email, password)
+                    # Try again with the fresh token
+                    fresh_payload = {"refreshtoken": fresh_refresh_token}
+                    headers = {"Content-Type": "application/json"}
+                    response = requests.post(
+                        auth_refresh_url,
+                        json=fresh_payload,
+                        headers=headers,
+                        timeout=30
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    id_token = data.get("idToken") or data.get("idtoken")
+                    if id_token:
+                        return id_token
+                except Exception as fallback_error:
+                    raise JQuantsAuthError(
+                        f"Unable to issue idToken. Refresh token from .env failed: {exc}\n"
+                        f"Fallback to email/password also failed: {fallback_error}"
+                    ) from exc
+        raise JQuantsAuthError(f"Unable to issue idToken from refresh token: {exc}") from exc
+    except requests.RequestException as exc:
+        raise JQuantsAuthError(f"Unable to issue idToken from refresh token: {exc}") from exc
+
+
 def fetch_data_from_api(code: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
     Fetch stock price data from J-Quants API.
@@ -77,9 +237,10 @@ def fetch_data_from_api(code: str, start_date: str, end_date: str) -> pd.DataFra
         Exception: If API request fails
     """
     base_url = "https://api.jquants.com/v1/prices/daily_quotes"
-    api_key = os.getenv("JQUANTS_API_KEY")
-    if not api_key:
-        raise ValueError("J-Quants API key missing. Please set JQUANTS_API_KEY in environment variables or .env file.")
+    try:
+        id_token = get_jquants_id_token()
+    except JQuantsAuthError as exc:
+        raise ValueError(f"Authentication failed: {exc}") from exc
     
     params = {
         "code": code,
@@ -87,9 +248,7 @@ def fetch_data_from_api(code: str, start_date: str, end_date: str) -> pd.DataFra
         "date_to": end_date
     }
     
-    headers = {
-        "Authorization": f"Bearer {api_key}"
-    }
+    headers = {"Authorization": f"Bearer {id_token}"}
     
     try:
         response = requests.get(base_url, headers=headers, params=params, timeout=30)
@@ -155,6 +314,19 @@ def load_stock_data(code: str, start_date: str, end_date: str,
     
     # Ensure date column is datetime type
     df['date'] = pd.to_datetime(df['date'])
+    
+    # Filter data to the specified date range
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+    
+    # Filter to only include dates within the specified range (inclusive)
+    df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)].copy()
+    
+    if df.empty:
+        raise ValueError(
+            f"No data found for code {code} in the specified date range "
+            f"({start_date} to {end_date}). The API may have returned data outside this range."
+        )
     
     # Sort by date
     df = df.sort_values(by='date').reset_index(drop=True)
